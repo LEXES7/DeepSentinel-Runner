@@ -5,6 +5,10 @@ detection models see arriving traffic rather than a bulk load.
 
 Runs locally on any laptop. No build step, no server to deploy.
 
+> **New here? Read [GUIDE.md](GUIDE.md)** — the complete A-to-Z, including the
+> one requirement that catches everyone: the Query Runner and the fusion engine
+> must point at the same database.
+
 ```bash
 poetry install
 cp config.example.ini config.ini      # then edit, or use the Settings panel
