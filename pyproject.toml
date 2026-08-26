@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "deepsentinel-query-runner"
+version = "1.0.0"
+description = "Replay a transaction file into the DeepSentinel platform database"
+authors = ["Sachintha Bhashitha <sachinthabhashitha245@gmail.com>"]
+readme = "README.md"
+packages = [{ include = "queryrunner" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.115"
+uvicorn = { extras = ["standard"], version = "^0.32" }
+sqlalchemy = "^2.0"
+pandas = "^2.0"
+python-multipart = "^0.0.9"
+# Excel support. Without it .xlsx uploads fail with a clear message rather
+# than a stack trace, but most extracts arrive as .xlsx so it is not optional.
+openpyxl = "^3.1"
+# Pure-Python PostgreSQL driver: `poetry install` never needs a C compiler,
+# which matters when four people install this on three operating systems.
+pg8000 = "^1.31"
+
+[tool.poetry.scripts]
+query-runner = "run:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

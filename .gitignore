@@ -1,0 +1,17 @@
+# Holds the database password.
+config.ini
+
+# Uploaded files and local database
+uploads/
+*.db
+*.sqlite3
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+.DS_Store
+.idea/
+.vscode/
