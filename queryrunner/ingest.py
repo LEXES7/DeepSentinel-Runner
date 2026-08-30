@@ -286,7 +286,7 @@ class ReplayJob:
                 if delay:
                     time.sleep(delay)
             else:
-                self.message = f"Replayed {self.inserted} rows from {source_file}."
+                self.message = self._summary(source_file)
 
             self.state = "done" if not self._stop.is_set() else "idle"
         except Exception as exc:                              # noqa: BLE001
@@ -296,15 +296,51 @@ class ReplayJob:
         finally:
             self.finished_at = time.time()
 
+    def _summary(self, source_file: str) -> str:
+        """What actually happened, in the words someone would use.
+
+        "Replayed 0 rows" was technically true and read as a failure. The case
+        that needs saying plainly is the common one: the file has been replayed
+        before, so there is nothing to do until the previous run is cleared.
+        """
+        if self.inserted == 0 and self.duplicates and not self.errors:
+            return (
+                f"Nothing queued — all {self.duplicates} rows from {source_file} "
+                "are already in the database. Finish the previous test run to "
+                "clear them, then replay."
+            )
+
+        parts = [f"Queued {self.inserted} of {self.total} rows from {source_file}"]
+        if self.duplicates:
+            parts.append(f"{self.duplicates} already present")
+        if self.errors:
+            parts.append(f"{self.errors} failed")
+        return ", ".join(parts) + "."
+
     def _insert_one(self, rec: dict, uploaded_by: str) -> None:
         session = get_session()
         try:
             # Archive first: a record of arrival must never depend on the queue
             # write succeeding.
-            session.add(TransactionArchive(**{
-                k: v for k, v in rec.items() if k != "payload"
-            }, uploaded_by=uploaded_by))
-            session.commit()
+            #
+            # Checked before inserting rather than relying on the unique
+            # constraint alone, because databases created before that
+            # constraint existed do not have it — and on those the insert would
+            # succeed and silently append a second copy of the whole file.
+            # The constraint is still the authority; this is what makes the
+            # behaviour the same on an older database.
+            already = session.query(TransactionArchive.id).filter(
+                TransactionArchive.transaction_id == rec["transaction_id"]
+            ).first()
+
+            if already is None:
+                session.add(TransactionArchive(**{
+                    k: v for k, v in rec.items() if k != "payload"
+                }, uploaded_by=uploaded_by))
+                session.commit()
+        except IntegrityError:
+            # Lost a race with the constraint. Same outcome: already archived.
+            session.rollback()
         except Exception as exc:                              # noqa: BLE001
             session.rollback()
             self.errors += 1
@@ -312,6 +348,9 @@ class ReplayJob:
             session.close()
             return
 
+        # The queue write is attempted regardless of whether the archive
+        # already held this row. They are cleared independently, so a row can
+        # legitimately be archived and no longer queued.
         try:
             live = TransactionLive(
                 transaction_id=rec["transaction_id"],

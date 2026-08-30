@@ -53,6 +53,11 @@ class TransactionArchive(Base):
     `source_file` and `uploaded_at` matter more than they look: when a result
     is questioned months later, the first question is which file it came from
     and when.
+
+    `transaction_id` is unique, matching the live queue. Without that the two
+    tables disagreed about what "already seen" means: replaying a file the
+    queue had already accepted was a no-op there but appended a second full
+    copy here, so the archive doubled while the run reported inserting nothing.
     """
 
     __tablename__ = "transactions_archive"
@@ -86,6 +91,7 @@ class TransactionArchive(Base):
 
     __table_args__ = (
         Index("ix_archive_date_type", "business_date", "tx_type"),
+        UniqueConstraint("transaction_id", name="uq_archive_transaction_id"),
     )
 
 

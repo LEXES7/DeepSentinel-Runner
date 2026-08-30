@@ -93,13 +93,83 @@ def create_tables() -> dict:
     Base.metadata.create_all(engine)
     after = set(inspect(engine).get_table_names())
     created = sorted(after - before)
+
+    upgrade = ensure_archive_unique()
+
+    message = f"Created {', '.join(created)}" if created else "All tables already present"
+    if upgrade["changed"] or upgrade["blocked"]:
+        message += f". {upgrade['message']}"
+
     return {
         "ok": True,
         "created": created,
         "existing": sorted(before & after),
-        "message": (
-            f"Created {', '.join(created)}" if created else "All tables already present"
-        ),
+        "upgrade": upgrade,
+        "message": message,
+    }
+
+
+ARCHIVE_UNIQUE = "uq_archive_transaction_id"
+
+
+def ensure_archive_unique() -> dict:
+    """Add the archive's unique index to a database created before it existed.
+
+    `create_all` only creates missing tables, so a database from before the
+    constraint keeps appending a fresh copy of a file on every replay. Adding
+    the index is additive and safe — but only when the table holds no
+    duplicates already, so that is checked first and a table with duplicates is
+    reported and left exactly as it is. Deciding what to delete is not this
+    function's call to make.
+    """
+    engine = get_engine()
+    insp = inspect(engine)
+
+    if "transactions_archive" not in insp.get_table_names():
+        return {"changed": False, "blocked": False, "message": "No archive table yet."}
+
+    have = {ix["name"] for ix in insp.get_indexes("transactions_archive")}
+    have |= {c["name"] for c in insp.get_unique_constraints("transactions_archive")}
+    if ARCHIVE_UNIQUE in have:
+        return {"changed": False, "blocked": False, "message": "Archive already unique."}
+
+    with engine.connect() as conn:
+        dupes = conn.execute(text(
+            "SELECT COUNT(*) FROM (SELECT transaction_id FROM transactions_archive "
+            "GROUP BY transaction_id HAVING COUNT(*) > 1) d"
+        )).scalar_one()
+
+        if dupes:
+            return {
+                "changed": False,
+                "blocked": True,
+                "duplicate_ids": int(dupes),
+                "message": (
+                    f"The archive holds {dupes} transaction ids more than once, "
+                    "from replaying a file before duplicates were prevented. "
+                    "Finish a test run to clear the tables and the constraint "
+                    "will be added automatically."
+                ),
+            }
+
+        try:
+            conn.execute(text(
+                f"CREATE UNIQUE INDEX {ARCHIVE_UNIQUE} "
+                "ON transactions_archive (transaction_id)"
+            ))
+            conn.commit()
+        except Exception as exc:                              # noqa: BLE001
+            logger.warning(f"Could not add {ARCHIVE_UNIQUE}: {exc}")
+            return {
+                "changed": False, "blocked": True,
+                "message": f"Could not add the archive constraint: {exc}",
+            }
+
+    logger.info(f"Added {ARCHIVE_UNIQUE} to transactions_archive.")
+    return {
+        "changed": True, "blocked": False,
+        "message": "Added the archive's unique constraint — replaying a file "
+                   "twice can no longer duplicate it.",
     }
 
 
