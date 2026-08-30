@@ -12,7 +12,7 @@ import logging
 import os
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -208,6 +208,82 @@ def stop_replay() -> dict:
 def release_stale(older_than_seconds: int = 120) -> dict:
     n = ingest.release_stale(older_than_seconds)
     return {"released": n, "message": f"Returned {n} stalled row(s) to the queue."}
+
+
+# Everything a test run produces, and nothing else. The exclusions matter more
+# than the list: users, alert recipients, thresholds and the audit log are
+# configuration and history shared by the whole team, not one person's test
+# output. Wiping those would lock everyone out of the database and erase the
+# record of who did it.
+SIMULATION_TABLES = (
+    "transactions_live",
+    "transactions_archive",
+    "fraud_cases",
+    "analysis_records",
+    "sar_drafts",
+)
+
+
+@app.post("/api/simulation/reset")
+def reset_simulation(confirm: str = "", dry_run: bool = True) -> dict:
+    """Clear what a test run left behind, so the next person starts clean.
+
+    Several people share one database. A run leaves a queue, an archive and a
+    pile of cases that the next tester then has to read around; this hands the
+    database back in the state it was found.
+
+    Two guards. It needs the literal phrase, so a stray click cannot fire it,
+    and it defaults to reporting rather than deleting. The deletion is written
+    to audit_log — a reset with no record of who reset it is how a shared
+    environment stops being accountable.
+    """
+    from sqlalchemy import inspect, text
+
+    if confirm != "reset simulation":
+        return {
+            "ok": False,
+            "message": "Type 'reset simulation' to confirm. This clears shared "
+                       "test data for everyone using this database.",
+        }
+
+    engine = db.get_engine()
+    names = set(inspect(engine).get_table_names())
+    counts: dict[str, int] = {}
+    with engine.connect() as conn:
+        for table in SIMULATION_TABLES:
+            if table not in names:
+                continue
+            counts[table] = conn.execute(
+                text(f"SELECT COUNT(*) FROM {table}")          # noqa: S608 — fixed names
+            ).scalar_one()
+
+    total = sum(counts.values())
+    if dry_run:
+        return {
+            "ok": True, "dry_run": True, "counts": counts, "total": total,
+            "message": f"{total} row(s) would be removed. Nothing deleted yet.",
+        }
+
+    with engine.begin() as conn:
+        for table in counts:
+            conn.execute(text(f"DELETE FROM {table}"))         # noqa: S608 — fixed names
+        if "audit_log" in names:
+            try:
+                conn.execute(
+                    text("INSERT INTO audit_log (timestamp, actor, action, target, "
+                         "outcome, detail) VALUES (:ts, :a, :act, :t, :o, :d)"),
+                    {"ts": datetime.now(timezone.utc), "a": "query-runner",
+                     "act": "simulation.reset", "t": "shared database",
+                     "o": "success",
+                     "d": "cleared " + ", ".join(f"{k}={v}" for k, v in counts.items())},
+                )
+            except Exception:                                  # noqa: BLE001
+                pass    # a missing column here must not roll back the cleanup
+
+    return {
+        "ok": True, "dry_run": False, "counts": counts, "total": total,
+        "message": f"Cleared {total} row(s). Accounts, recipients and settings kept.",
+    }
 
 
 @app.get("/api/cases")

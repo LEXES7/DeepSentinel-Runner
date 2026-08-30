@@ -210,6 +210,25 @@
     <div id="casesBox"></div>
   </div>
 
+  <!-- ── Clean up after a test ── -->
+  <div class="card">
+    <h2>Finish a test run</h2>
+    <p class="hint">
+      Clears the transactions and cases this run produced, so the next person
+      starts from a clean database. Accounts, alert recipients, thresholds and
+      the audit log are kept — only test output is removed.
+      <br><strong>Everyone shares this database.</strong> Check nobody else is
+      mid-test before you clear it.
+    </p>
+    <div class="btns" style="margin-top:12px">
+      <button onclick="resetSim(true)">Show what would be removed</button>
+      <button onclick="resetSim(false)" style="border-color:#7f3b34;color:#ff8f80">
+        Clear test data
+      </button>
+    </div>
+    <div id="resetBox"></div>
+  </div>
+
   <div class="foot">
     Writes to <span class="mono">transactions_archive</span> and <span class="mono">transactions_live</span>.<br>
     Re-uploading the same file adds nothing the second time — transaction identifiers are unique.
@@ -283,6 +302,30 @@ async function testDb() {
     $('dbPill').className = 'pill ' + (r.ok?'on':'off');
     $('dbPill').textContent = r.ok ? 'connected' : 'not connected';
   } catch (e) { say('dbMsg', e.message, false); }
+}
+
+async function resetSim(dry) {
+  const box = $('resetBox');
+  // The destructive call asks again, in the browser, naming the number of rows
+  // — a confirm() that does not say what it is about to destroy is noise people
+  // learn to click through.
+  if (!dry) {
+    const peek = await api('/api/simulation/reset?confirm=' +
+      encodeURIComponent('reset simulation') + '&dry_run=true', { method: 'POST' });
+    const n = peek.total ?? 0;
+    if (n === 0) { box.innerHTML = '<p class="hint">Nothing to clear.</p>'; return; }
+    if (!window.confirm(
+      `Delete ${n} row(s) of test data from the shared database?\n\n` +
+      `Anyone else testing right now will lose their run.\n` +
+      `Accounts, recipients and settings are kept.`)) return;
+  }
+  box.innerHTML = '<p class="hint">Working…</p>';
+  const r = await api('/api/simulation/reset?confirm=' +
+    encodeURIComponent('reset simulation') + '&dry_run=' + dry, { method: 'POST' });
+  const rows = Object.entries(r.counts || {})
+    .map(([k, v]) => `<div><span class="mono">${k}</span> — ${v}</div>`).join('');
+  box.innerHTML = `<p class="hint" style="margin-top:10px">${r.message}</p>${rows}`;
+  refreshCounts();
 }
 
 async function createTables() {
