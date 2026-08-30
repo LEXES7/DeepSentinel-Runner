@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import tempfile
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -222,6 +223,49 @@ SIMULATION_TABLES = (
     "analysis_records",
     "sar_drafts",
 )
+
+
+@app.get("/api/platform/status")
+def platform_status() -> dict:
+    """Is anything on the other end of the queue?
+
+    The runner fills `transactions_live`; the detection platform drains it.
+    Nothing here could previously tell you whether that second half was
+    running, so a replay into a stopped platform looked exactly like a replay
+    into a working one — rows go in, nothing comes out, and the tester has no
+    way to know which.
+
+    Read-only, and it uses the platform's unauthenticated capabilities
+    endpoint so the runner never has to hold a login.
+    """
+    import urllib.error
+    import urllib.request
+
+    base = config.load().replay.platform_url.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/public/capabilities", timeout=3) as r:
+            caps = json.loads(r.read().decode())
+    except Exception as exc:                               # noqa: BLE001
+        return {
+            "reachable": False,
+            "url": base,
+            "message": f"No answer from {base}. Start the platform, or correct "
+                       f"platform_url in config.ini. ({type(exc).__name__})",
+        }
+
+    detectors = {k: bool(v.get("live")) for k, v in caps.items() if isinstance(v, dict)}
+    live = sum(detectors.values())
+    return {
+        "reachable": True,
+        "url": base,
+        "detectors": detectors,
+        "live": live,
+        "total": len(detectors),
+        "message": (f"{live} of {len(detectors)} detectors serving"
+                    if live == len(detectors)
+                    else f"{live} of {len(detectors)} serving — "
+                         + ", ".join(k for k, v in detectors.items() if not v) + " down"),
+    }
 
 
 @app.post("/api/simulation/reset")

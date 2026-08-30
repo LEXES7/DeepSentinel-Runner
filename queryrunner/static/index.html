@@ -87,6 +87,22 @@
   .pill.off{ background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad); }
   .pill.idle{ background:var(--raised);color:var(--faint); }
   details summary { cursor:pointer;color:var(--dim);font-size:12px;user-select:none; }
+  .step { display:inline-flex;align-items:center;justify-content:center;
+          width:20px;height:20px;border-radius:5px;margin-right:9px;
+          background:#1d2733;color:#7fd7c4;font-size:11px;font-weight:700; }
+  .pipe { display:flex;align-items:stretch;gap:10px;margin-top:14px;flex-wrap:wrap; }
+  .pipe-node { flex:1;min-width:150px;border:1px solid #24303d;border-radius:9px;
+               padding:12px 14px;background:#111823;display:flex;
+               flex-direction:column;gap:5px; }
+  .pipe-node b { font-size:13px; }
+  .pipe-sub { font-size:11px;color:var(--faint);line-height:1.5; }
+  .pipe-arrow { align-self:center;color:#33465a;font-size:16px; }
+  .pipe-ok    { border-color:#1f5b4d; }
+  .pipe-warn  { border-color:#6b4a1c; }
+  .pipe-down  { border-color:#7f3b34; }
+  .note { margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.6; }
+  .note-warn { background:#2a1f0e;color:#ffbd6b; }
+  .note-down { background:#2a1512;color:#ff8f80; }
   .foot { color:var(--faint);font-size:11px;text-align:center;margin-top:26px;line-height:1.7; }
 </style>
 </head>
@@ -101,9 +117,35 @@
 </header>
 
 <main>
+  <!-- ── Pipeline ── -->
+  <div class="card" id="pipeCard">
+    <h2>Pipeline</h2>
+    <p class="hint">
+      This tool fills the queue. The detection platform empties it. Both have to
+      be running for a replay to do anything.
+    </p>
+    <div class="pipe">
+      <div class="pipe-node">
+        <b>This tool</b>
+        <span id="pipeDb" class="pipe-sub">checking…</span>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node">
+        <b>Queue</b>
+        <span id="pipeQueue" class="pipe-sub">—</span>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-node" id="pipePlatformBox">
+        <b>Detectors</b>
+        <span id="pipePlatform" class="pipe-sub">checking…</span>
+      </div>
+    </div>
+    <div id="pipeNote"></div>
+  </div>
+
   <!-- ── Database ── -->
   <div class="card">
-    <h2>Database</h2>
+    <h2><span class="step">1</span>Database</h2>
     <p class="hint">Where transactions are written. Saved to <span class="mono" id="cfgPath">config.ini</span> under <span class="mono">[DATABASE]</span>.</p>
 
     <div class="row two">
@@ -142,7 +184,7 @@
 
   <!-- ── Replay settings ── -->
   <div class="card">
-    <h2>Replay</h2>
+    <h2><span class="step">2</span>Replay settings</h2>
     <p class="hint">Rows are inserted at a steady rate so the detectors see arriving traffic rather than one bulk load.</p>
     <div class="row three">
       <div><label>Rows per second</label><input id="rpRate" type="number" min="0.1" step="0.5" value="5"></div>
@@ -164,7 +206,7 @@
 
   <!-- ── Upload ── -->
   <div class="card">
-    <h2>Transaction file</h2>
+    <h2><span class="step">3</span>Transaction file</h2>
     <p class="hint">CSV or Excel. Columns are matched automatically — PaySim names and common variants both work.</p>
 
     <div class="drop" id="drop" onclick="document.getElementById('file').click()">
@@ -178,7 +220,7 @@
 
   <!-- ── Progress ── -->
   <div class="card" id="progCard" style="display:none">
-    <h2>Replay in progress</h2>
+    <h2><span class="step">4</span>Replay in progress</h2>
     <p class="hint" id="progFile"></p>
     <div class="stats">
       <div class="stat"><b id="sIns">0</b><span>inserted</span></div>
@@ -196,7 +238,7 @@
 
   <!-- ── Tables ── -->
   <div class="card">
-    <h2>Tables</h2>
+    <h2><span class="step">5</span>What is in the database</h2>
     <p class="hint">
       <span class="mono">transactions_archive</span> is the permanent record of everything received.
       <span class="mono">transactions_live</span> is the queue the detectors consume.
@@ -212,7 +254,7 @@
 
   <!-- ── Clean up after a test ── -->
   <div class="card">
-    <h2>Finish a test run</h2>
+    <h2><span class="step">6</span>Finish a test run</h2>
     <p class="hint">
       Clears the transactions and cases this run produced, so the next person
       starts from a clean database. Accounts, alert recipients, thresholds and
@@ -237,6 +279,9 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// Slow poll always, so the queue visibly drains while you watch. The replay
+// loop polls faster on its own; this is the resting heartbeat.
+setInterval(() => { if (!document.hidden) refreshPipeline(); }, 4000);
 const api = async (url, opts={}) => {
   const r = await fetch(url, opts);
   const body = await r.json().catch(() => ({}));
@@ -336,7 +381,41 @@ async function createTables() {
   } catch (e) { say('dbMsg', e.message, false); }
 }
 
+// Both halves of the pipeline, polled together. A tester needs to know the
+// platform is consuming before they push a file, not after.
+async function refreshPipeline() {
+  try {
+    const db = await api('/api/database/status');
+    const box = $('pipeDb').parentElement;
+    $('pipeDb').textContent = db.ok ? (db.describe || 'connected') : (db.error || 'not connected');
+    box.className = 'pipe-node ' + (db.ok ? 'pipe-ok' : 'pipe-down');
+
+    if (db.ok) {
+      const by = (db.counts && db.counts.live_by_status) || {};
+      const pending = by.pending ?? 0, claimed = by.claimed ?? 0, screened = by.screened ?? 0;
+      $('pipeQueue').textContent =
+        `${pending} waiting · ${claimed} in flight · ${screened} screened`;
+      $('pipeQueue').parentElement.className =
+        'pipe-node ' + (pending > 0 ? 'pipe-warn' : 'pipe-ok');
+    }
+  } catch (e) { /* the card simply stays as it was */ }
+
+  try {
+    const p = await api('/api/platform/status');
+    $('pipePlatform').textContent = p.reachable ? p.message : 'not reachable';
+    $('pipePlatformBox').className =
+      'pipe-node ' + (!p.reachable ? 'pipe-down' : (p.live === p.total ? 'pipe-ok' : 'pipe-warn'));
+    // The failure worth spelling out: rows go in and nothing comes out.
+    $('pipeNote').innerHTML = p.reachable ? '' :
+      `<div class="note note-down">${p.message}<br>
+       Until it answers, a replay will fill the queue and nothing will screen it.</div>`;
+  } catch (e) {
+    $('pipePlatform').textContent = 'unknown';
+  }
+}
+
 async function refreshCounts() {
+  refreshPipeline();
   try {
     const r = await api('/api/database/status');
     $('dbPill').className = 'pill ' + (r.ok?'on':'off');

@@ -63,6 +63,10 @@ class ReplayConfig:
     # Where Drive for Desktop (or any shared folder) is mounted. A file picked
     # from here is read in place rather than uploaded.
     watch_folder: str = ""
+    # The detection platform's API. Only read from, never written to: the
+    # runner asks it whether the detectors are up, so a replay that nothing is
+    # consuming can be spotted before the file is pushed rather than after.
+    platform_url: str = "http://127.0.0.1:8090"
 
 
 @dataclass
@@ -112,6 +116,7 @@ def load() -> Settings:
         rows_per_second=float(get("REPLAY", "rows_per_second", "5") or 5),
         batch_size=int(get("REPLAY", "batch_size", "50") or 50),
         watch_folder=get("REPLAY", "watch_folder"),
+        platform_url=get("REPLAY", "platform_url", "http://127.0.0.1:8090"),
     )
     return Settings(database=db, replay=rp)
 
